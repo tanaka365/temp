@@ -4,14 +4,21 @@ from transformers import AutoTokenizer
 import torch
 from transformers import AutoModelForSequenceClassification
 
-dataset = load_dataset("rotten_tomatoes")
-model_ckpt = "textattack/bert-base-uncased-imdb"
+dataset = load_dataset("tyqiangz/multilingual-sentiments", "japanese")
+model_ckpt = "cl-tohoku/bert-base-japanese-whole-word-masking"
 tokenizer = AutoTokenizer.from_pretrained(model_ckpt)
 device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
-num_labels = 2
+num_labels = 3
 model = AutoModelForSequenceClassification.from_pretrained(
     model_ckpt, num_labels=num_labels
 ).to(device)
+
+# %%
+# データ削減
+for i in ["train", "validation", "test"]:
+    dataset[i] = dataset[i].train_test_split(
+        test_size=0.9, shuffle=True, seed=0
+    )["train"]
 
 
 # %%
@@ -68,15 +75,23 @@ trainer = Trainer(
 trainer.train()
 
 # %%
-preds_output = trainer.predict(dataset_encoded["test"])
+preds_output = trainer.predict(
+    dataset_encoded["test"]
+)
 
 import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.metrics import ConfusionMatrixDisplay, confusion_matrix
 
 y_preds = np.argmax(preds_output.predictions, axis=1)
-y_valid = np.array(dataset_encoded["validation"]["label"])
-labels = dataset_encoded["train"].features["label"].names
+y_valid = np.array(
+    dataset_encoded["test"]["label"]
+)
+labels = (
+    dataset_encoded["test"]
+    .features["label"]
+    .names
+)
 
 
 def plot_confusion_matrix(y_preds, y_true, labels):
@@ -97,6 +112,8 @@ from textattack.constraints.pre_transformation import (
     RepeatModification,
     StopwordModification,
 )
+import gensim
+from textattack.shared import GensimWordEmbedding
 from textattack.transformations import WordSwapEmbedding
 from textattack.search_methods import GreedyWordSwapWIR
 
@@ -110,12 +127,19 @@ model_wrapper = textattack.models.wrappers.HuggingFaceModelWrapper(
 goal_function = textattack.goal_functions.UntargetedClassification(
     model_wrapper
 )
+
+gensim_model = gensim.models.KeyedVectors.load_word2vec_format(
+    "../sample-text-attack/model.vec", binary=False
+)
+word_embedding = GensimWordEmbedding(gensim_model)
+transformation = WordSwapEmbedding(
+    max_candidates=50, embedding=word_embedding
+)
 constraints = [
     RepeatModification(),
     StopwordModification(),
-    WordEmbeddingDistance(min_cos_sim=0.8),
+    WordEmbeddingDistance(min_cos_sim=0.95),
 ]
-transformation = WordSwapEmbedding(max_candidates=50)
 search_method = GreedyWordSwapWIR(wir_method="delete")
 
 # Construct the actual attack
@@ -123,26 +147,23 @@ attack = textattack.Attack(
     goal_function, constraints, transformation, search_method
 )
 
-input_text = "I really enjoyed the new movie that came out last month."
-label = 1  # Positive
-attack_result = attack.attack(input_text, label)
-
-print(attack_result)
 
 # %%
-input_text = dataset["train"]["text"][0]
-label = 1  # Positive
+i = 3
+input_text = dataset["train"]["text"][i]
+label = dataset["train"]["label"][i]  # Positive
 attack_result = attack.attack(input_text, label)
+print(label)
 print(attack_result)
 
 # %%
 dataset_attack_test = textattack.datasets.HuggingFaceDataset(
-    "rotten_tomatoes", split="test"
+    "tyqiangz/multilingual-sentiments", "japanese", split="test"
 )
 attack_args = textattack.AttackArgs(
-    num_examples=200,
+    num_examples=20,
     shuffle=True,
-    log_to_csv="log.csv",
+    log_to_csv="log_japanese.csv",
     checkpoint_interval=5,
     checkpoint_dir="checkpoints",
     disable_stdout=True,

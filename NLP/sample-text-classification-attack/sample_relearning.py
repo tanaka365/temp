@@ -42,7 +42,7 @@ model_name = "sample-text-classification-bert"
 
 training_args = TrainingArguments(
     output_dir=model_name,
-    num_train_epochs=1,
+    num_train_epochs=3,
     learning_rate=2e-5,
     per_device_train_batch_size=batch_size,
     per_device_eval_batch_size=batch_size,
@@ -113,7 +113,7 @@ goal_function = textattack.goal_functions.UntargetedClassification(
 constraints = [
     RepeatModification(),
     StopwordModification(),
-    WordEmbeddingDistance(min_cos_sim=0.8),
+    WordEmbeddingDistance(min_cos_sim=0.9),
 ]
 transformation = WordSwapEmbedding(max_candidates=50)
 search_method = GreedyWordSwapWIR(wir_method="delete")
@@ -123,33 +123,79 @@ attack = textattack.Attack(
     goal_function, constraints, transformation, search_method
 )
 
-input_text = "I really enjoyed the new movie that came out last month."
-label = 1  # Positive
-attack_result = attack.attack(input_text, label)
-
-print(attack_result)
-
 # %%
-input_text = dataset["train"]["text"][0]
-label = 1  # Positive
+input_text = dataset["train"]["text"][1]
+label = dataset["train"]["label"][1]  # Positive
 attack_result = attack.attack(input_text, label)
 print(attack_result)
 
 # %%
-dataset_attack_test = textattack.datasets.HuggingFaceDataset(
-    "rotten_tomatoes", split="test"
+dataset_attacked = dataset.copy()
+dataset_attacked_train = textattack.datasets.HuggingFaceDataset(
+    dataset_attacked["train"]
 )
 attack_args = textattack.AttackArgs(
-    num_examples=200,
-    shuffle=True,
-    log_to_csv="log.csv",
+    num_examples=-1,
+    log_to_csv="log_train.csv",
     checkpoint_interval=5,
     checkpoint_dir="checkpoints",
     disable_stdout=True,
 )
 
-attacker = textattack.Attacker(attack, dataset_attack_test, attack_args)
+attacker = textattack.Attacker(attack, dataset_attacked_train, attack_args)
+attacker.attack_dataset()
+
+# %%
+dataset_attacked_validation = textattack.datasets.HuggingFaceDataset(
+    dataset_attacked["validation"]
+)
+attack_args = textattack.AttackArgs(
+    num_examples=-1,
+    log_to_csv="log_train.csv",
+    checkpoint_interval=5,
+    checkpoint_dir="checkpoints",
+    disable_stdout=True,
+)
+
+attacker = textattack.Attacker(
+    attack, dataset_attacked_validation, attack_args
+)
 attacker.attack_dataset()
 
 
 # %%
+def tokenize(batch):
+    return tokenizer(batch["text"], padding=True, truncation=True)
+
+
+dataset_attacked_encoded = dataset_attacked.map(
+    tokenize, batched=True, batch_size=None
+)
+
+batch_size = 16
+logging_steps = len(dataset_attacked_encoded["train"]) // batch_size
+model_name = "sample-text-classification-bert"
+
+training_args = TrainingArguments(
+    output_dir=model_name,
+    num_train_epochs=3,
+    learning_rate=2e-5,
+    per_device_train_batch_size=batch_size,
+    per_device_eval_batch_size=batch_size,
+    weight_decay=0.01,
+    evaluation_strategy="epoch",
+    disable_tqdm=False,
+    logging_steps=logging_steps,
+    push_to_hub=False,
+    log_level="error",
+)
+
+trainer = Trainer(
+    model=model,
+    args=training_args,
+    compute_metrics=compute_metrics,
+    train_dataset=dataset_encoded["train"],
+    eval_dataset=dataset_encoded["validation"],
+    tokenizer=tokenizer,
+)
+trainer.train()
